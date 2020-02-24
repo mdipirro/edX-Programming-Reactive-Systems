@@ -1,0 +1,1 @@
+["sbt.Task[scala.collection.immutable.Map[java.lang.String, scala.collection.Seq[scala.Tuple2[java.nio.file.Path, sbt.nio.FileStamp]]]]",{"2.13.1":{"hashes":[["/home/matteo/Documents/ProgrammingReactiveSystems/async/src/test/scala/async/AsyncSuite.scala","5e060d30deaa3854570523b26af9df64a1b2d9cb"]],"lastModifiedTimes":[]}}]

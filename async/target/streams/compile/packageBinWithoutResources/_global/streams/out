@@ -1,0 +1,21 @@
+[0m[[0m[0mdebug[0m] [0m[0mPackaging /home/matteo/Documents/ProgrammingReactiveSystems/async/target/scala-2.13/reactive-async-without-resources_2.13-0.1.0-SNAPSHOT.jar ...[0m
+[0m[[0m[0mdebug[0m] [0m[0mInput file mappings:[0m
+[0m[[0m[0mdebug[0m] [0m[0m	[0m
+[0m[[0m[0mdebug[0m] [0m[0m	  /home/matteo/Documents/ProgrammingReactiveSystems/async/target/scala-2.13/classes[0m
+[0m[[0m[0mdebug[0m] [0m[0m	async[0m
+[0m[[0m[0mdebug[0m] [0m[0m	  /home/matteo/Documents/ProgrammingReactiveSystems/async/target/scala-2.13/classes/async[0m
+[0m[[0m[0mdebug[0m] [0m[0m	async/Async$.class[0m
+[0m[[0m[0mdebug[0m] [0m[0m	  /home/matteo/Documents/ProgrammingReactiveSystems/async/target/scala-2.13/classes/async/Async$.class[0m
+[0m[[0m[0mdebug[0m] [0m[0m	async/FutureBasedApi.class[0m
+[0m[[0m[0mdebug[0m] [0m[0m	  /home/matteo/Documents/ProgrammingReactiveSystems/async/target/scala-2.13/classes/async/FutureBasedApi.class[0m
+[0m[[0m[0mdebug[0m] [0m[0m	async/CallbackBasedApi.class[0m
+[0m[[0m[0mdebug[0m] [0m[0m	  /home/matteo/Documents/ProgrammingReactiveSystems/async/target/scala-2.13/classes/async/CallbackBasedApi.class[0m
+[0m[[0m[0mdebug[0m] [0m[0m	async/AsyncInterface.class[0m
+[0m[[0m[0mdebug[0m] [0m[0m	  /home/matteo/Documents/ProgrammingReactiveSystems/async/target/scala-2.13/classes/async/AsyncInterface.class[0m
+[0m[[0m[0mdebug[0m] [0m[0m	async/Async$$anonfun$recoverFailure$1.class[0m
+[0m[[0m[0mdebug[0m] [0m[0m	  /home/matteo/Documents/ProgrammingReactiveSystems/async/target/scala-2.13/classes/async/Async$$anonfun$recoverFailure$1.class[0m
+[0m[[0m[0mdebug[0m] [0m[0m	async/Async.class[0m
+[0m[[0m[0mdebug[0m] [0m[0m	  /home/matteo/Documents/ProgrammingReactiveSystems/async/target/scala-2.13/classes/async/Async.class[0m
+[0m[[0m[0mdebug[0m] [0m[0m	async/Async$$anonfun$insist$1.class[0m
+[0m[[0m[0mdebug[0m] [0m[0m	  /home/matteo/Documents/ProgrammingReactiveSystems/async/target/scala-2.13/classes/async/Async$$anonfun$insist$1.class[0m
+[0m[[0m[0mdebug[0m] [0m[0mDone packaging.[0m
