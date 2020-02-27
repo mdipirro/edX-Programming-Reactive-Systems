@@ -86,10 +86,9 @@ class BinaryTreeSet extends Actor {
       context become normal
       pendingQueue foreach (root ! _)
       pendingQueue = Queue.empty
-    case GC => ()
-    //case msg: OperationFinished => context.parent ! msg
-    //case msg: ContainsResult => context.parent ! msg
-      // Ignore other GC messages
+    case msg: OperationFinished => context.parent ! msg
+    case msg: ContainsResult => context.parent ! msg
+     // Ignore other GC messages
   }
 
 }
@@ -145,8 +144,8 @@ class BinaryTreeNode(val elem: Int, initiallyRemoved: Boolean) extends Actor {
     * `insertConfirmed` tracks whether the copy of this node to the new tree has been confirmed.
     */
   def copying(expected: Set[ActorRef], insertConfirmed: Boolean): Receive = {
-    case OperationFinished =>
-      if (expected.isEmpty)  terminateAndNotifyCopyDone()
+    case OperationFinished(_) =>
+      if (expected.isEmpty) terminateAndNotifyCopyDone()
       else context become copying(expected, insertConfirmed = true)
     case CopyFinished =>
       val newExpected = expected - sender
