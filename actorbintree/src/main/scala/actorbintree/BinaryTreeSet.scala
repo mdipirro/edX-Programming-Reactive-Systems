@@ -68,7 +68,10 @@ class BinaryTreeSet extends Actor {
   /** Accepts `Operation` and `GC` messages. */
   val normal: Receive = {
     case msg: Operation => root ! msg
-    case _ => ???
+    case GC =>
+      val newRoot = createRoot
+      context become garbageCollecting(newRoot)
+      root ! CopyTo(newRoot)
   }
 
   // optional
@@ -76,7 +79,18 @@ class BinaryTreeSet extends Actor {
     * `newRoot` is the root of the new binary tree where we want to copy
     * all non-removed elements into.
     */
-  def garbageCollecting(newRoot: ActorRef): Receive = ???
+  def garbageCollecting(newRoot: ActorRef): Receive = {
+    case msg: Operation => pendingQueue = pendingQueue enqueue msg
+    case CopyFinished =>
+      root = newRoot
+      context become normal
+      pendingQueue foreach (root ! _)
+      pendingQueue = Queue.empty
+    case GC => ()
+    //case msg: OperationFinished => context.parent ! msg
+    //case msg: ContainsResult => context.parent ! msg
+      // Ignore other GC messages
+  }
 
 }
 
@@ -118,10 +132,10 @@ class BinaryTreeNode(val elem: Int, initiallyRemoved: Boolean) extends Actor {
       if (removed && children.isEmpty) {
         terminateAndNotifyCopyDone()
       } else {
-        if (!removed) {
-          msg.treeNode ! Insert(self, 0, elem)
-        }
         context become copying(children, removed)
+        if (!removed) {
+          msg.treeNode ! Insert(self, elem, elem)
+        }
         children foreach(_ ! msg)
       }
   }
@@ -132,12 +146,12 @@ class BinaryTreeNode(val elem: Int, initiallyRemoved: Boolean) extends Actor {
     */
   def copying(expected: Set[ActorRef], insertConfirmed: Boolean): Receive = {
     case OperationFinished =>
-      if (expected.isEmpty) terminateAndNotifyCopyDone()
-      else copying(expected, insertConfirmed = true)
+      if (expected.isEmpty)  terminateAndNotifyCopyDone()
+      else context become copying(expected, insertConfirmed = true)
     case CopyFinished =>
       val newExpected = expected - sender
-      if (newExpected.isEmpty && insertConfirmed) terminateAndNotifyCopyDone()
-      else copying(newExpected, insertConfirmed)
+      if (newExpected.isEmpty && insertConfirmed)  terminateAndNotifyCopyDone()
+      else context become copying(newExpected, insertConfirmed)
   }
 
   private def handleContains(msg: Contains): Unit = {
@@ -153,7 +167,7 @@ class BinaryTreeNode(val elem: Int, initiallyRemoved: Boolean) extends Actor {
 
   private def handleInsert(msg: Insert): Unit = {
     def insertInPosition(pos: Position): Unit = {
-      subtrees += (pos -> context.actorOf(BinaryTreeNode.props(msg.elem, initiallyRemoved = false), s"node($elem)"))
+      subtrees += (pos -> context.actorOf(BinaryTreeNode.props(msg.elem, initiallyRemoved = false)))
       msg.requester ! OperationFinished(msg.id)
     }
 
