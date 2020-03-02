@@ -42,7 +42,7 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
 
   def receive = {
     case JoinedPrimary   => context.become(leader)
-    case JoinedSecondary => context.become(replica)
+    case JoinedSecondary => context.become(replica(0L))
   }
 
   /* TODO Behavior for  the leader role. */
@@ -53,14 +53,25 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
     case Remove(k, id) =>
       kv = kv.removed(k)
       sender ! OperationAck(id)
-    case Get(k, id) => sender ! GetResult(k, kv get k, id)
+    case Get(k, id) => replyToLookup(k, id)
     case _ =>
   }
 
   /* TODO Behavior for the replica role. */
-  val replica: Receive = {
-    case _ =>
+  def replica(expectedSeq: Long): Receive = {
+    case Get(k, id) => replyToLookup(k, id)
+    case Snapshot(k, ov, seq) =>
+      if (seq == expectedSeq) {
+        kv = ov.fold(kv removed k)(kv updated (k, _))
+        context become replica(expectedSeq + 1)
+        sender ! SnapshotAck(k, seq)
+      } else if (seq < expectedSeq) {
+        sender ! SnapshotAck(k, seq)
+        // seq + 1 is certainly <= expectedSeq, so no become() is necessary
+      }
+      // just ignore the message if seq > expectedSeq
   }
 
+  private def replyToLookup(key: String, opId: Long): Unit = sender ! GetResult(key, kv get key, opId)
 }
 
