@@ -1,9 +1,9 @@
 package kvstore
 
-import akka.actor.Props
-import akka.actor.Actor
-import akka.actor.ActorRef
+import akka.actor.{Actor, ActorRef, Cancellable, Props}
+
 import scala.concurrent.duration._
+import scala.language.postfixOps
 
 object Replicator {
   case class Replicate(key: String, valueOption: Option[String], id: Long)
@@ -25,6 +25,8 @@ class Replicator(val replica: ActorRef) extends Actor {
 
   // map from sequence number to pair of sender and request
   var acks = Map.empty[Long, (ActorRef, Replicate)]
+  // map from a sequence number to a Cancellable corresponding to an ongoing timer
+  var ongoingTimers = Map.empty[Long, Cancellable]
   // a sequence of not-yet-sent snapshots (you can disregard this if not implementing batching)
   var pending = Vector.empty[Snapshot]
   
@@ -35,10 +37,24 @@ class Replicator(val replica: ActorRef) extends Actor {
     ret
   }
 
-  
-  /* TODO Behavior for the Replicator. */
   def receive: Receive = {
-    case _ =>
+    case msg @ Replicate(k, vo, _) =>
+      val seq = nextSeq()
+      acks = acks updated (seq, (sender, msg))
+      ongoingTimers = ongoingTimers updated (seq, context.system.scheduler scheduleWithFixedDelay (
+        initialDelay = 0 millis,
+        delay = 100 millis,
+        receiver = replica,
+        message = Snapshot(k, vo, seq)
+      ))
+    case SnapshotAck(k, seq) =>
+      if (ongoingTimers.isDefinedAt(seq) && acks.isDefinedAt(seq)) {
+        ongoingTimers(seq).cancel()
+        ongoingTimers = ongoingTimers removed seq
+        val (recipient, msg) = acks(seq)
+        acks = acks removed seq
+        recipient ! Replicated(k, msg.id)
+      }
   }
 
 }
