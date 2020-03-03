@@ -24,6 +24,8 @@ object Replica {
   case class OperationFailed(id: Long) extends OperationReply
   case class GetResult(key: String, valueOption: Option[String], id: Long) extends OperationReply
 
+  private case class OperationTimeout(replyTo: ActorRef, id: Long)
+
   def props(arbiter: ActorRef, persistenceProps: Props): Props = Props(new Replica(arbiter, persistenceProps))
 }
 
@@ -33,9 +35,17 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
   import Persistence._
   import context.dispatcher
 
+  override def preStart(): Unit = arbiter ! Join
+
   override def supervisorStrategy: SupervisorStrategy = OneForOneStrategy(-1, Duration.Inf) {
     case _: PersistenceException => Restart
   }
+
+  private case class UnackedOperation(ackTo: ActorRef,
+                                      persistenceTimer: Option[Cancellable],
+                                      operationTimer: Option[Cancellable],
+                                      waitingForReplicators: Set[ActorRef]
+                                   )
 
   /*
    * The contents of this actor is just a suggestion, you can implement it in any way you like.
@@ -47,8 +57,8 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
   // the current set of replicators
   var replicators = Set.empty[ActorRef]
 
-  private val persistence = context.actorOf(Persistence.props(false))
-  private var pendingAck = Option.empty[(ActorRef, Cancellable)]
+  private val persistence = context.actorOf(persistenceProps)
+  private var acks = Map.empty[Long, UnackedOperation]
 
   def receive = {
     case JoinedPrimary   => context.become(leader)
@@ -59,39 +69,97 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
   val leader: Receive = {
     case Insert(k, v, id) =>
       kv = kv updated (k, v)
-      sender ! OperationAck(id)
+      persistAndReplicate(k, Some(v), id, 100 millis)
+
     case Remove(k, id) =>
       kv = kv removed k
-      sender ! OperationAck(id)
+      persistAndReplicate(k, None, id, 100 millis)
+
     case Get(k, id) => replyToLookup(k, id)
-    case _ =>
+
+    case Persisted(_, id) =>
+      updateStatus(id, {ack =>
+        ack.persistenceTimer foreach (_.cancel())
+        ack.copy(persistenceTimer = None)
+      })
+      if (acked(id)) {
+        println("PrimaryPersisted")
+        cleanUpAndAck(id, _ ! OperationAck(id))
+      }
+
+    case Replicated(_, id) =>
+      updateStatus(id, ack => ack.copy(waitingForReplicators = ack.waitingForReplicators - sender))
+      if (acked(id)) {
+        println("PrimaryReplicated")
+        cleanUpAndAck(id, _ ! OperationAck(id))
+      }
+
+    case OperationTimeout(client, id) =>
+      println("OperationTimeout")
+      cleanUpAndAck(id, _ => client ! OperationFailed(id))
   }
 
   def replica(expectedSeq: Long): Receive = {
     case Get(k, id) => replyToLookup(k, id)
     case Insert(_, _, id) => sender ! OperationFailed(id)
     case Remove(_, id) => sender ! OperationFailed(id)
+
     case Snapshot(k, ov, seq) if seq == expectedSeq =>
       kv = ov.fold(kv removed k)(kv updated (k, _))
-      val client = sender
-
-      pendingAck = Some(client -> context.system.scheduler.scheduleWithFixedDelay(
-        initialDelay = 0 millis,
-        delay = 100 millis,
-        receiver = persistence,
-        message = Persist(k, ov, seq)
+      acks = acks updated (seq, UnackedOperation(
+        ackTo = sender,
+        persistenceTimer = Some(retryPersistence(k, ov, seq, 100 millis)),
+        operationTimer = None,
+        waitingForReplicators = Set.empty
       ))
-    case Snapshot(k, ov, seq) if seq < expectedSeq =>
+
+    case Snapshot(k, _, seq) if seq < expectedSeq =>
       sender ! SnapshotAck(k, seq) // seq + 1 is certainly <= expectedSeq, so no become() is necessary
     // just ignore the message if seq > expectedSeq
-    case Persisted(k, id) if id == expectedSeq => pendingAck foreach { case (client, timer) =>
-      pendingAck = None
-      context become replica(expectedSeq + 1L)
-      timer.cancel()
-      client ! SnapshotAck(k, id)
-    }
+
+    case Persisted(k, id) if id == expectedSeq =>
+      println("SecondaryPersisted")
+      cleanUpAndAck(id, {
+        context become replica(expectedSeq + 1L)
+        _ ! SnapshotAck(k, id)
+      })
   }
 
   private def replyToLookup(key: String, opId: Long): Unit = sender ! GetResult(key, kv get key, opId)
+
+  private def persistAndReplicate(key: String, value: Option[String], opId: Long, retryEvery: FiniteDuration): Unit = {
+    val client = sender
+    val operationTimer = context.system.scheduler.scheduleOnce(1 second, self, OperationTimeout(client, opId))
+    acks = acks updated (opId, UnackedOperation(
+      ackTo = client,
+      persistenceTimer = Some(retryPersistence(key, value, opId, retryEvery)),
+      operationTimer = Some(operationTimer),
+      waitingForReplicators = replicators
+    ))
+    replicators foreach (_ ! Replicate(key, value, opId))
+
+  }
+
+  private def retryPersistence(key: String, value: Option[String], opId: Long, interval: FiniteDuration): Cancellable =
+    context.system.scheduler.scheduleWithFixedDelay(
+      initialDelay = 0 millis,
+      delay = interval,
+      receiver = persistence,
+      message = Persist(key, value, opId)
+    )
+
+  private def updateStatus(id: Long, updateWith: UnackedOperation => UnackedOperation): Unit =
+    acks get id foreach {ack => acks = acks updated (id, updateWith(ack))}
+
+  private def acked(id: Long) =
+    (acks get id).fold(false)(ack => ack.persistenceTimer.isEmpty && ack.waitingForReplicators.isEmpty)
+
+  private def cleanUpAndAck(opId: Long, ackTo: ActorRef => Unit): Unit = {
+    acks get opId foreach { case UnackedOperation(recipient, persistenceTimer, operationTimer, _) =>
+      List(persistenceTimer, operationTimer) foreach (_ foreach (_.cancel()))
+      acks = acks removed opId
+      ackTo(recipient)
+    }
+  }
 }
 
