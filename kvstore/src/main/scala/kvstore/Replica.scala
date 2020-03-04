@@ -1,13 +1,10 @@
 package kvstore
 
 import akka.actor.SupervisorStrategy.Restart
-import akka.actor.{Actor, ActorRef, Cancellable, OneForOneStrategy, PoisonPill, Props, SupervisorStrategy, Terminated}
+import akka.actor.{Actor, ActorRef, Cancellable, OneForOneStrategy, Props, SupervisorStrategy}
 import kvstore.Arbiter._
-import akka.pattern.{ask, pipe}
 
 import scala.concurrent.duration._
-import akka.util.Timeout
-
 import scala.language.postfixOps
 
 object Replica {
@@ -30,9 +27,9 @@ object Replica {
 }
 
 class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
+  import Persistence._
   import Replica._
   import Replicator._
-  import Persistence._
   import context.dispatcher
 
   override def preStart(): Unit = arbiter ! Join
@@ -82,21 +79,31 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
         ack.persistenceTimer foreach (_.cancel())
         ack.copy(persistenceTimer = None)
       })
-      if (acked(id)) {
-        println("PrimaryPersisted")
-        cleanUpAndAck(id, _ ! OperationAck(id))
-      }
+      if (acked(id)) cleanUpAndAck(id, _ ! OperationAck(id))
 
     case Replicated(_, id) =>
       updateStatus(id, ack => ack.copy(waitingForReplicators = ack.waitingForReplicators - sender))
-      if (acked(id)) {
-        println("PrimaryReplicated")
-        cleanUpAndAck(id, _ ! OperationAck(id))
-      }
+      if (acked(id)) cleanUpAndAck(id, _ ! OperationAck(id))
 
     case OperationTimeout(client, id) =>
-      println("OperationTimeout")
       cleanUpAndAck(id, _ => client ! OperationFailed(id))
+
+    case Replicas(replicas) =>
+      val currentSecondaries = secondaries.keySet
+      val haveLeft = currentSecondaries -- replicas
+      val haveJoined = replicas -- currentSecondaries - self
+
+      val bindings = bindNewcomers(haveJoined)
+      val haveJoinedReplicators = bindings.values.toSet
+      secondaries ++= bindings
+      replicators ++= haveJoinedReplicators
+      briefNewcomers(haveJoinedReplicators)
+
+      val haveLeftReplicators = leftReplicators(haveLeft)
+      haveLeftReplicators foreach context.stop
+      secondaries = secondaries removedAll haveLeft
+      replicators --= haveLeftReplicators
+      waiveOustandingAcks(haveLeftReplicators)
   }
 
   def replica(expectedSeq: Long): Receive = {
@@ -118,7 +125,6 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
     // just ignore the message if seq > expectedSeq
 
     case Persisted(k, id) if id == expectedSeq =>
-      println("SecondaryPersisted")
       cleanUpAndAck(id, {
         context become replica(expectedSeq + 1L)
         _ ! SnapshotAck(k, id)
@@ -137,7 +143,6 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
       waitingForReplicators = replicators
     ))
     replicators foreach (_ ! Replicate(key, value, opId))
-
   }
 
   private def retryPersistence(key: String, value: Option[String], opId: Long, interval: FiniteDuration): Cancellable =
@@ -160,6 +165,27 @@ class Replica(val arbiter: ActorRef, persistenceProps: Props) extends Actor {
       acks = acks removed opId
       ackTo(recipient)
     }
+  }
+
+  private def bindNewcomers(replicas: Set[ActorRef]): Map[ActorRef, ActorRef] = (for {
+    replica <- replicas
+    replicator = context.actorOf(Replicator.props(replica))
+  } yield replica -> replicator).toMap
+
+  private def briefNewcomers(replicators: Set[ActorRef]): Unit = for {
+    (k, v) <- kv
+    replicator <- replicators
+  } yield replicator ! Replicate(k, Some(v), 0L)
+
+  private def leftReplicators(replicas: Set[ActorRef]): Set[ActorRef] = for {
+    replica <- replicas
+    replicator <- secondaries get replica
+  } yield replicator
+
+  private def waiveOustandingAcks(replicators: Set[ActorRef]): Unit =  acks foreach {
+    case (id, UnackedOperation(_, _, _, remainingAcks)) =>
+      updateStatus(id, _.copy(waitingForReplicators = remainingAcks -- replicators))
+      if (acked(id)) cleanUpAndAck(id, _ ! OperationAck(id))
   }
 }
 
