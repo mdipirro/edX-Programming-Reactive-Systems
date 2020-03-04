@@ -18,15 +18,7 @@ object Replicator {
 class Replicator(val replica: ActorRef) extends Actor {
   import Replicator._
   import context.dispatcher
-  
-  /*
-   * The contents of this actor is just a suggestion, you can implement it in any way you like.
-   */
 
-  // map from sequence number to pair of sender and request
-  var acks = Map.empty[Long, (ActorRef, Replicate)]
-  // map from a sequence number to a Cancellable corresponding to an ongoing timer
-  var ongoingTimers = Map.empty[Long, Cancellable]
   // a sequence of not-yet-sent snapshots (you can disregard this if not implementing batching)
   var pending = Vector.empty[Snapshot]
   
@@ -37,23 +29,31 @@ class Replicator(val replica: ActorRef) extends Actor {
     ret
   }
 
-  def receive: Receive = {
+  def receive: Receive = manInTheMiddle(Map.empty, Map.empty)
+
+  /**
+    * Model a Replicator acting as a man-in-the-middle between an external actor and `replica`
+    * @param acks map from sequence number to pair of sender and request
+    * @param ongoingTimers map from a sequence number to a Cancellable corresponding to an ongoing timer
+    * @return A partial function handling Replicate and SnapshotAck messages
+    */
+  private def manInTheMiddle(acks: Map[Long, (ActorRef, Replicate)], ongoingTimers: Map[Long, Cancellable]): Receive = {
     case msg @ Replicate(k, vo, _) =>
       val seq = nextSeq()
-      acks = acks updated (seq, (sender, msg))
-      ongoingTimers = ongoingTimers updated (seq, context.system.scheduler scheduleWithFixedDelay (
+      val newAcks = acks updated (seq, (sender, msg))
+      val newTimers = ongoingTimers updated (seq, context.system.scheduler scheduleWithFixedDelay (
         initialDelay = 0 millis,
         delay = 100 millis,
         receiver = replica,
         message = Snapshot(k, vo, seq)
       ))
+      context become manInTheMiddle(newAcks, newTimers)
     case SnapshotAck(k, seq) =>
       if (ongoingTimers.isDefinedAt(seq) && acks.isDefinedAt(seq)) {
         ongoingTimers(seq).cancel()
-        ongoingTimers = ongoingTimers removed seq
         val (recipient, msg) = acks(seq)
-        acks = acks removed seq
         recipient ! Replicated(k, msg.id)
+        context become manInTheMiddle(acks removed seq, ongoingTimers removed seq)
       }
   }
 
